@@ -1,0 +1,37 @@
+{
+  "name": "content-broadcast-system",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test:user": "node src/tests/testUserModel.js",
+    "debug:db": "node src/tests/debugConnection.js",
+    "test:scheduling": "node src/tests/testScheduling.js",
+    "test:auth": "node src/tests/testAuth.js",
+    "test:content": "node src/tests/testContent.js",
+    "test:approval": "node src/tests/testApproval.js",
+    "test:broadcast": "node src/tests/testBroadcast.js",
+    "test:edge": "node src/tests/edgeCases.test.js",
+    "test:all": "npm run test:auth && npm run test:content && npm run test:approval && npm run test:scheduling && npm run test:broadcast && npm run test:edge"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.104.1",
+    "axios": "^1.15.2",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "form-data": "^4.0.5",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.1.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

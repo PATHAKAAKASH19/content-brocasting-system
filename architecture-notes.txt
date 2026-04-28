@@ -1,0 +1,380 @@
+================================================================================
+                    CONTENT BROADCASTING SYSTEM
+                          ARCHITECTURE NOTES
+================================================================================
+
+PROJECT OVERVIEW
+================================================================================
+A backend system for educational institutions where teachers upload subject-based 
+content (question papers, materials) and principals approve it before broadcasting 
+to students via public API with time-based rotation scheduling.
+
+
+TECHNOLOGY STACK
+================================================================================
+- Runtime: Node.js (ES Modules)
+- Framework: Express.js
+- Database: PostgreSQL (via Supabase)
+- Authentication: JWT + bcrypt
+- File Storage: Supabase Storage
+- File Upload: Multer
+
+
+AUTHENTICATION FLOW
+================================================================================
+
+1. USER REGISTRATION
+   - POST /api/auth/register
+   - Input: name, email, password, role (principal/teacher)
+   - Process:
+     * Validate required fields and role
+     * Hash password using bcrypt (10 salt rounds)
+     * Store in Supabase 'users' table
+     * Return user info (excluding password hash)
+
+2. USER LOGIN
+   - POST /api/auth/login
+   - Input: email, password
+   - Process:
+     * Find user by email
+     * Compare password with bcrypt
+     * Generate JWT token with payload: { id, email, role, name }
+     * Token expires in 7 days
+     * Update last_login_at timestamp
+
+3. JWT VERIFICATION (authMiddleware.js)
+   - Extract token from Authorization: Bearer <token>
+   - Verify with JWT_SECRET
+   - Attach decoded user to req.user
+   - Handle missing/invalid/expired tokens
+
+4. ROLE-BASED ACCESS CONTROL (roleMiddleware.js)
+   - restrictTo(...roles) returns middleware
+   - Checks req.user.role against allowed roles
+   - Returns 403 if role not authorized
+   - Convenience functions: isPrincipal, isTeacher
+
+
+SUBJECT-BASED SYSTEM DESIGN
+================================================================================
+
+1. CONCEPT
+   - Content is organized by subject (Maths, Science, English, etc.)
+   - Each subject has independent rotation schedule
+   - Students can filter by subject when viewing content
+
+2. DATABASE STRUCTURE
+   - content.subject: stores subject for each content
+   - content_slots: one record per subject for rotation tracking
+   - content_schedule: links content to slots with rotation order
+
+3. SUBJECT VALIDATION
+   - Valid subjects: Maths, Science, English, History, Geography
+   - Case-insensitive handling
+   - Invalid subjects return empty response (not error)
+
+4. SUBJECT QUERIES
+   - Get active content by subject
+   - Filter broadcast API by subject parameter
+   - Get available subjects for a teacher
+
+
+APPROVAL WORKFLOW
+================================================================================
+
+1. CONTENT LIFECYCLE
+   Uploaded (Teacher) → Pending → Approved/Rejected (Principal)
+
+2. TEACHER UPLOAD
+   - POST /api/content/upload (teacher only)
+   - File validation (JPG/PNG/GIF, max 10MB)
+   - Required: title, subject, start_time, end_time
+   - Status set to 'pending'
+
+3. PRINCIPAL ACTIONS
+   - GET /api/content/all?status=pending (view pending)
+   - POST /api/content/:id/approve (approve content)
+   - POST /api/content/:id/reject (reject with reason)
+
+4. APPROVAL PROCESS
+   - Check content exists and not already approved/rejected
+   - Verify content hasn't expired
+   - Update status to 'approved'
+   - Set approved_by, approved_at
+   - Add to subject slot and schedule
+
+5. REJECTION PROCESS
+   - Require rejection_reason
+   - Update status to 'rejected'
+   - Store reason for teacher reference
+   - Content not added to schedule
+
+6. POST-APPROVAL ACTIONS
+   - Get or create subject slot
+   - Calculate next rotation order
+   - Add to content_schedule table
+
+
+SCHEDULING & ROTATION LOGIC (CRITICAL)
+================================================================================
+
+1. CONCEPT
+   Multiple content items per subject rotate on a loop
+   Example: Maths papers A (5min) → B (5min) → C (5min) → repeat
+
+2. ROTATION ALGORITHM (Application-Level)
+   
+   Pseudo-code: 
+   
+   function getActiveContent(contents):
+     total_duration = sum(content.duration for content in contents)
+     current_minutes = floor(now() / 60) // minutes since epoch
+     cycle_position = current_minutes % total_duration
+
+     accumulated = 0
+     for content in contents:
+     if cycle_position < accumulated + content.duration:
+     return content, remaining_time
+     accumulated += content.duration
+
+
+3. WHY APPLICATION-LEVEL OVER DATABASE?
+- Easier to debug and modify
+- No complex PostgreSQL functions
+- Better error messages
+- Works across all database providers
+
+4. SCHEDULE PREVIEW
+- GET /api/schedule/preview/:subject
+- Returns upcoming content for X minutes
+- Shows full rotation order
+- Helps teachers verify schedule
+
+5. ROTATION STATUS
+- GET /api/schedule/status (principal only)
+- Shows active/inactive status per subject
+- Displays current content and remaining time
+
+
+DATABASE DESIGN
+================================================================================
+
+1. USERS TABLE
+- id: UUID (primary key)
+- name: VARCHAR(255)
+- email: VARCHAR(255) UNIQUE
+- password_hash: VARCHAR(255)
+- role: VARCHAR(50) CHECK (principal/teacher)
+- is_active: BOOLEAN
+- created_at, updated_at, last_login_at
+
+2. CONTENT TABLE
+- id: UUID (primary key)
+- title, description, subject
+- file_url, file_type, file_size
+- uploaded_by (FK to users)
+- status: pending/approved/rejected
+- rejection_reason
+- approved_by (FK to users), approved_at
+- start_time, end_time (TIMESTAMPTZ)
+- rotation_duration (INTEGER, default 5)
+
+3. CONTENT_SLOTS TABLE
+- id: UUID (primary key)
+- subject: VARCHAR(100) UNIQUE
+- current_position, last_rotation_at
+
+4. CONTENT_SCHEDULE TABLE
+- id: UUID (primary key)
+- content_id (FK to content)
+- slot_id (FK to content_slots)
+- rotation_order (INTEGER)
+- duration (INTEGER)
+
+5. INDEXES
+- idx_users_email (for login)
+- idx_content_status, subject, uploaded_by
+- idx_content_time_window (for active content queries)
+- idx_schedule_slot_id, rotation_order
+
+
+FOLDER STRUCTURE
+================================================================================
+
+src/
+├── config/
+│   ├── config.js          # Environment configuration
+│   ├── supabase.js        # Supabase client setup
+│   └── validateEnv.js     # Environment validation
+├── controllers/
+│   ├── auth.controller.js
+│   ├── content.controller.js
+│   ├── schedule.controller.js
+│   └── broadcast.controller.js
+├── middleware/
+│   ├── auth.middleware.js    # JWT verification
+│   ├── role.middleware.js    # RBAC
+│   └── upload.middleware.js  # Multer + validation
+├── models/
+│   ├── user.model.js
+│   ├── content.model.js
+│   └── schedule.model.js
+├── routes/
+│   ├── auth.routes.js
+│   ├── content.routes.js
+│   ├── schedule.routes.js
+│   └── broadcast.routes.js
+├── services/
+│   ├── storage.service.js    # Supabase Storage
+│   └── scheduling.service.js # Rotation logic
+├── utils/
+│   └── dbHelpers.js
+├── tests/
+│   ├── testAuth.js
+│   ├── testContent.js
+│   ├── testApproval.js
+│   ├── testScheduling.js
+│   ├── testBroadcast.js
+│   └── edgeCases.test.js
+└── server.js
+
+
+MIDDLEWARE USAGE
+================================================================================
+
+1. GLOBAL MIDDLEWARE (server.js)
+- cors(): Handle cross-origin requests
+- express.json(): Parse JSON bodies
+- express.urlencoded(): Parse form data
+- express.static(): Serve uploads folder
+
+2. AUTH MIDDLEWARE (auth.middleware.js)
+- protect(): Verifies JWT, attaches user to req
+- Applied to all protected routes
+
+3. ROLE MIDDLEWARE (role.middleware.js)
+- restrictTo(...roles): Checks user role
+- Applied after protect()
+
+4. UPLOAD MIDDLEWARE (upload.middleware.js)
+- uploadSingle(): Multer file handling
+- handleUploadError(): Multer error handling
+- validateContentFields(): Field validation
+
+5. ERROR HANDLING
+- 404 handler for unknown routes
+- Global error handler for exceptions
+
+
+SCALABILITY APPROACH
+================================================================================
+
+1. DATABASE SCALING
+- Indexes on frequently queried columns
+- Connection pooling via Supabase
+- Read replicas for broadcast API (future)
+
+2. API SCALING
+- Stateless JWT authentication
+- Horizontal scaling possible (multiple Node instances)
+- Load balancer for distribution
+
+3. CACHING STRATEGY (Bonus - can be added)
+- Redis cache for /api/broadcast/live/:teacherId
+- Cache TTL: 1 minute (matches rotation granularity)
+- Invalidate cache on content approval/changes
+
+4. FILE STORAGE
+- Supabase Storage with CDN
+- Public URLs for direct access
+- No file processing on API server
+
+5. RATE LIMITING (Bonus - can be added)
+- express-rate-limit on public endpoints
+- 100 requests per minute per IP
+- Prevents abuse of broadcast API
+
+6. OPTIMIZATIONS
+- Batch database queries where possible
+- Avoid N+1 queries (use Supabase joins)
+- Rotation calculation in memory (no DB on each request)
+
+
+SECURITY CONSIDERATIONS
+================================================================================
+
+1. AUTHENTICATION
+- Passwords hashed with bcrypt (10 rounds)
+- JWT tokens with 7-day expiration
+- No sensitive data in tokens
+
+2. AUTHORIZATION
+- Role-based access control on all protected routes
+- Row-level checks in controllers (teacher can only see own content)
+
+3. FILE UPLOAD
+- File type whitelist (images only)
+- File size limit (10MB)
+- Sanitized filenames
+- Stored in cloud storage, not on API server
+
+4. INPUT VALIDATION
+- Required fields validation
+- Date range validation (end > start)
+- Subject whitelist validation
+- Email format validation
+
+5. API PROTECTION
+- Public endpoints return empty arrays (not errors)
+- No database error exposure to client
+- Environment-aware error messages
+
+
+ASSUMPTIONS & DECISIONS
+================================================================================
+
+1. ROTATION LOGIC
+- Implemented at application level (Node.js) for simplicity
+- Real-time calculation, no pre-computed schedule
+- Durations in minutes, minimum 1 min, maximum 60 min
+
+2. FILE STORAGE
+- Supabase Storage for cloud storage
+- Public buckets for easy student access
+- Local uploads as temporary before cloud upload
+
+3. AUTHENTICATION
+- JWT without refresh tokens (simplified)
+- 7-day token expiry
+- No email verification (for assignment scope)
+
+4. TIME ZONES
+- All timestamps stored in UTC
+- Client responsible for local conversion
+
+5. SUBJECTS
+- Predefined list (Maths, Science, English, History, Geography)
+- Can be extended by modifying validation
+
+6. CONCURRENCY
+- Not handling advanced concurrent uploads
+- Supabase handles database concurrency
+
+
+BONUS FEATURES (NOT IN MVP BUT CAN ADD)
+================================================================================
+1. Redis Caching for broadcast API
+2. Rate limiting on public endpoints
+3. S3 storage alternative
+4. Subject-wise analytics dashboard
+5. Pagination on content listing
+6. Email notifications for approval/rejection
+7. WebSocket for real-time content updates
+8. Content expiry notifications
+9. Teacher dashboard with statistics
+10. Bulk upload functionality
+
+
+================================================================================
+                 END OF ARCHITECTURE NOTES
+================================================================================
